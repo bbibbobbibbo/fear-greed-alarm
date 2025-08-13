@@ -2,17 +2,20 @@ import requests
 import os
 from datetime import datetime, date
 import calendar
+import re
+from bs4 import BeautifulSoup
+import json
 
-class FearGreedNotifier:
+class CNNFearGreedNotifier:
     def __init__(self):
         """
-        GitHub Actions 환경에서 실행되는 Fear & Greed Index 알림 클래스
-        환경변수에서 토큰과 채팅 ID를 가져옵니다.
+        CNN Fear & Greed Index 텔레그램 알림 클래스
+        미국 주식시장 기반 지수 사용
         """
         # GitHub Secrets에서 환경변수로 가져오기
         self.telegram_token = os.getenv('TELEGRAM_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        self.api_url = "https://api.alternative.me/fng/"
+        self.cnn_url = "https://edition.cnn.com/markets/fear-and-greed"
         
         # 환경변수 확인
         if not self.telegram_token or not self.chat_id:
@@ -20,78 +23,236 @@ class FearGreedNotifier:
         
         print("✅ 환경변수 로드 완료")
         
-    def get_fear_greed_index(self):
+    def get_cnn_fear_greed_index(self):
         """
-        Fear & Greed Index 데이터를 가져오는 함수
+        CNN Fear & Greed Index 데이터를 스크래핑으로 가져오는 함수
         
         Returns:
             dict: 지수 정보가 담긴 딕셔너리
         """
         try:
-            print("📊 Fear & Greed Index 데이터 요청 중...")
+            print("📊 CNN Fear & Greed Index 데이터 요청 중...")
             
-            # API에서 데이터 요청
-            response = requests.get(self.api_url, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            current_data = data['data'][0]
-            
-            result = {
-                'value': int(current_data['value']),
-                'classification': current_data['value_classification'],
-                'timestamp': current_data['timestamp'],
-                'time_until_update': current_data.get('time_until_update', 'Unknown')
+            # User-Agent 설정 (봇 차단 방지)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
             }
             
-            print(f"✅ 데이터 수신 완료: {result['value']}/100")
-            return result
+            # CNN 페이지 요청
+            response = requests.get(self.cnn_url, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            # BeautifulSoup으로 HTML 파싱
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # 방법 1: JSON 데이터 찾기 (스크립트 태그에서)
+            fear_greed_data = self._extract_from_script_tags(soup)
+            if fear_greed_data:
+                return fear_greed_data
+            
+            # 방법 2: HTML 요소에서 직접 추출
+            fear_greed_data = self._extract_from_html_elements(soup)
+            if fear_greed_data:
+                return fear_greed_data
+            
+            # 방법 3: 텍스트 패턴 매칭
+            fear_greed_data = self._extract_from_text_patterns(response.text)
+            if fear_greed_data:
+                return fear_greed_data
+            
+            print("❌ CNN 데이터를 추출할 수 없습니다.")
+            return None
             
         except requests.exceptions.RequestException as e:
-            print(f"❌ API 요청 오류: {e}")
+            print(f"❌ CNN 사이트 접속 오류: {e}")
             return None
-        except (KeyError, ValueError) as e:
+        except Exception as e:
             print(f"❌ 데이터 파싱 오류: {e}")
             return None
     
-    def get_trend_analysis(self):
+    def _extract_from_script_tags(self, soup):
         """
-        최근 7일간의 추이 분석
+        스크립트 태그에서 JSON 데이터 추출
         """
         try:
-            print("📈 추이 분석 중...")
-            response = requests.get(f"{self.api_url}?limit=7", timeout=15)
-            response.raise_for_status()
+            # 스크립트 태그들을 검색
+            script_tags = soup.find_all('script')
             
-            data = response.json()
-            values = [int(item['value']) for item in data['data']]
+            for script in script_tags:
+                if script.string and 'fear' in script.string.lower():
+                    text = script.string
+                    
+                    # JSON 패턴 찾기
+                    json_patterns = [
+                        r'"fearAndGreedScore"[:\s]*(\d+)',
+                        r'"score"[:\s]*(\d+)',
+                        r'"currentScore"[:\s]*(\d+)',
+                        r'fearGreed["\']?[:\s]*(\d+)',
+                    ]
+                    
+                    for pattern in json_patterns:
+                        match = re.search(pattern, text, re.IGNORECASE)
+                        if match:
+                            score = int(match.group(1))
+                            if 0 <= score <= 100:
+                                print(f"✅ 스크립트에서 지수 발견: {score}")
+                                return {
+                                    'value': score,
+                                    'classification': self._get_classification(score),
+                                    'source': 'CNN Fear & Greed Index',
+                                    'extraction_method': 'script_tag'
+                                }
             
-            if len(values) >= 2:
-                current = values[0]
-                previous = values[1]
-                change = current - previous
-                
-                if change > 0:
-                    trend = f"📈 전일 대비 +{change}포인트 상승"
-                elif change < -0:
-                    trend = f"📉 전일 대비 {change}포인트 하락"
-                else:
-                    trend = "➡️ 전일과 동일"
-                
-                # 7일 평균 계산
-                avg_7days = sum(values) / len(values)
-                
-                return trend, avg_7days
-            else:
-                return "📊 추이 데이터 부족", 0
-                
+            return None
+            
         except Exception as e:
-            print(f"❌ 추이 분석 오류: {e}")
-            return "📊 추이 분석 불가", 0
+            print(f"스크립트 추출 오류: {e}")
+            return None
+    
+    def _extract_from_html_elements(self, soup):
+        """
+        HTML 요소에서 직접 추출
+        """
+        try:
+            # 가능한 CSS 선택자들
+            selectors = [
+                '[data-module="FearGreedIndex"]',
+                '.fear-greed-score',
+                '.fear-greed-number',
+                '.gauge-score',
+                '.index-score',
+                'div[class*="fear"]',
+                'span[class*="score"]',
+            ]
+            
+            for selector in selectors:
+                elements = soup.select(selector)
+                for element in elements:
+                    text = element.get_text(strip=True)
+                    
+                    # 숫자 패턴 찾기
+                    numbers = re.findall(r'\b(\d{1,2})\b', text)
+                    for num_str in numbers:
+                        score = int(num_str)
+                        if 0 <= score <= 100:
+                            print(f"✅ HTML 요소에서 지수 발견: {score}")
+                            return {
+                                'value': score,
+                                'classification': self._get_classification(score),
+                                'source': 'CNN Fear & Greed Index',
+                                'extraction_method': 'html_element'
+                            }
+            
+            return None
+            
+        except Exception as e:
+            print(f"HTML 요소 추출 오류: {e}")
+            return None
+    
+    def _extract_from_text_patterns(self, html_text):
+        """
+        텍스트 패턴 매칭으로 추출
+        """
+        try:
+            # 다양한 패턴으로 검색
+            patterns = [
+                r'Fear\s*(?:&|and)\s*Greed\s*(?:Index)?[:\s]*(\d{1,2})',
+                r'Current\s*(?:Score|Index)[:\s]*(\d{1,2})',
+                r'Index[:\s]*(\d{1,2})',
+                r'"score"[:\s]*(\d{1,2})',
+                r'data-score["\s]*=["\s]*(\d{1,2})',
+            ]
+            
+            for pattern in patterns:
+                matches = re.finditer(pattern, html_text, re.IGNORECASE)
+                for match in matches:
+                    score = int(match.group(1))
+                    if 0 <= score <= 100:
+                        print(f"✅ 텍스트 패턴에서 지수 발견: {score}")
+                        return {
+                            'value': score,
+                            'classification': self._get_classification(score),
+                            'source': 'CNN Fear & Greed Index',
+                            'extraction_method': 'text_pattern'
+                        }
+            
+            return None
+            
+        except Exception as e:
+            print(f"텍스트 패턴 추출 오류: {e}")
+            return None
+    
+    def _get_classification(self, value):
+        """
+        CNN 기준 분류 (미국 주식시장)
+        """
+        if value <= 25:
+            return "Extreme Fear"
+        elif value <= 45:
+            return "Fear"
+        elif value <= 55:
+            return "Neutral"
+        elif value <= 75:
+            return "Greed"
+        else:
+            return "Extreme Greed"
+    
+    def get_fallback_data(self):
+        """
+        CNN에서 데이터를 가져올 수 없을 때 대체 데이터
+        """
+        try:
+            print("🔄 대체 데이터 소스 시도 중...")
+            
+            # MarketWatch Fear & Greed 시도
+            marketwatch_url = "https://www.marketwatch.com/investing/index/spx"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            response = requests.get(marketwatch_url, headers=headers, timeout=10)
+            
+            # VIX 지수를 기반으로 간단한 Fear & Greed 추정
+            vix_pattern = r'VIX[^\d]*(\d+\.?\d*)'
+            vix_match = re.search(vix_pattern, response.text, re.IGNORECASE)
+            
+            if vix_match:
+                vix_value = float(vix_match.group(1))
+                # VIX를 Fear & Greed로 변환 (간단한 공식)
+                # VIX 낮음 = 탐욕, VIX 높음 = 공포
+                if vix_value < 15:
+                    fear_greed = 75  # 탐욕
+                elif vix_value < 20:
+                    fear_greed = 60  # 약간 탐욕
+                elif vix_value < 25:
+                    fear_greed = 50  # 중립
+                elif vix_value < 30:
+                    fear_greed = 35  # 공포
+                else:
+                    fear_greed = 20  # 극도의 공포
+                
+                print(f"✅ VIX {vix_value} 기반 Fear & Greed: {fear_greed}")
+                return {
+                    'value': fear_greed,
+                    'classification': self._get_classification(fear_greed),
+                    'source': f'VIX-based estimate (VIX: {vix_value})',
+                    'extraction_method': 'fallback_vix'
+                }
+            
+            return None
+            
+        except Exception as e:
+            print(f"대체 데이터 오류: {e}")
+            return None
     
     def interpret_index(self, value):
         """
-        지수 값에 따른 해석과 투자 가이드
+        CNN Fear & Greed Index 해석 (미국 주식시장 기준)
         
         Args:
             value (int): Fear & Greed Index 값 (0-100)
@@ -101,39 +262,35 @@ class FearGreedNotifier:
         """
         if value <= 25:
             interpretation = "🔴 극도의 공포 (Extreme Fear)"
-            advice = "📈 가치투자 기회! 우량주 매수를 고려해보세요. 역발상 투자의 황금 타이밍일 수 있습니다."
+            advice = "📈 미국 주식시장이 극도로 두려워하고 있습니다. 워렌 버핏의 조언대로 '남이 두려워할 때 탐욕스러워하라'는 시점일 수 있습니다."
             emoji = "😱"
-            strategy = "💰 점진적 매수 전략 추천"
+            strategy = "💰 우량 대형주 점진적 매수 고려"
         elif value <= 45:
-            interpretation = "🟠 공포 (Fear)" 
-            advice = "📊 관심 종목들의 밸류에이션을 확인해보세요. 좋은 기업이 할인된 가격에 나올 수 있습니다."
+            interpretation = "🟠 공포 (Fear)"
+            advice = "📊 시장에 공포 심리가 확산되고 있습니다. 가치주들의 밸류에이션을 확인하고 저평가된 우량기업을 찾아보세요."
             emoji = "😰"
-            strategy = "🎯 선별적 매수 고려"
+            strategy = "🎯 가치주 중심 선별적 매수"
         elif value <= 55:
             interpretation = "🟡 중립 (Neutral)"
-            advice = "⚖️ 평소와 같이 꾸준한 투자를 유지하세요. 정기 적립투자에 좋은 시기입니다."
+            advice = "⚖️ 시장이 균형을 이루고 있습니다. 평소와 같이 꾸준한 분산투자와 정기적립을 유지하세요."
             emoji = "😐"
-            strategy = "🔄 정기투자 유지"
+            strategy = "🔄 정기투자 및 리밸런싱"
         elif value <= 75:
             interpretation = "🟢 탐욕 (Greed)"
-            advice = "⚠️ 과열 구간 진입. 신중한 매수가 필요하며, 고평가된 종목은 피하는 것이 좋습니다."
+            advice = "⚠️ 시장에 탐욕이 커지고 있습니다. 고평가된 종목들을 점검하고 신중한 매수 접근이 필요합니다."
             emoji = "😊"
-            strategy = "🚨 신중한 투자 필요"
+            strategy = "🚨 보수적 접근, 현금 비중 확대"
         else:
             interpretation = "🔥 극도의 탐욕 (Extreme Greed)"
-            advice = "🚨 고평가 구간! 일부 매도를 고려하고 현금 비중을 늘리는 것을 추천합니다."
+            advice = "🚨 시장이 과열되었습니다. 일부 차익실현을 고려하고 다음 기회를 위해 현금을 준비하는 것이 좋겠습니다."
             emoji = "🤑"
-            strategy = "💸 차익실현 고려"
+            strategy = "💸 차익실현 및 현금 확보"
             
         return interpretation, advice, emoji, strategy
     
     def is_us_market_closed(self):
         """
         미국 주식시장 휴장일인지 확인하는 함수
-        NYSE, NASDAQ 기준
-        
-        Returns:
-            bool: 휴장일이면 True
         """
         today = datetime.now()
         month = today.month
@@ -147,66 +304,20 @@ class FearGreedNotifier:
             
         # 고정 휴장일들
         fixed_holidays = [
-            (1, 1),   # New Year's Day (신정)
-            (7, 4),   # Independence Day (독립기념일)
-            (12, 25), # Christmas Day (크리스마스)
+            (1, 1),   # New Year's Day
+            (7, 4),   # Independence Day
+            (12, 25), # Christmas Day
         ]
         
         if (month, day) in fixed_holidays:
             print(f"🇺🇸 미국 주식시장 휴장일입니다: {month}월 {day}일")
             return True
         
-        # 변동 휴장일들 (간단 버전)
-        # Martin Luther King Jr. Day (1월 셋째 월요일)
-        if month == 1 and weekday == 0:  # 1월의 월요일
-            # 1월의 세 번째 월요일 계산
-            first_monday = 7 - (date(today.year, 1, 1).weekday() + 1) % 7 + 1
-            third_monday = first_monday + 14
-            if day == third_monday:
-                print("🇺🇸 Martin Luther King Jr. Day - 미국 휴장일")
-                return True
-        
-        # Presidents' Day (2월 셋째 월요일)
-        if month == 2 and weekday == 0:
-            first_monday = 7 - (date(today.year, 2, 1).weekday() + 1) % 7 + 1
-            third_monday = first_monday + 14
-            if day == third_monday:
-                print("🇺🇸 Presidents' Day - 미국 휴장일")
-                return True
-        
-        # Memorial Day (5월 마지막 월요일)
-        if month == 5 and weekday == 0:
-            # 5월의 마지막 월요일 찾기
-            last_day = calendar.monthrange(today.year, 5)[1]
-            last_monday = last_day - (date(today.year, 5, last_day).weekday() + 1) % 7
-            if day == last_monday:
-                print("🇺🇸 Memorial Day - 미국 휴장일")
-                return True
-        
-        # Labor Day (9월 첫째 월요일)
-        if month == 9 and weekday == 0:
-            first_monday = 7 - (date(today.year, 9, 1).weekday() + 1) % 7 + 1
-            if day == first_monday:
-                print("🇺🇸 Labor Day - 미국 휴장일")
-                return True
-        
-        # Thanksgiving Day (11월 넷째 목요일)
-        if month == 11 and weekday == 3:  # 목요일
-            first_thursday = 7 - (date(today.year, 11, 1).weekday() + 4) % 7 + 1
-            fourth_thursday = first_thursday + 21
-            if day == fourth_thursday:
-                print("🇺🇸 Thanksgiving Day - 미국 휴장일")
-                return True
-        
         return False
     
     def should_send_message(self):
         """
         메시지를 전송해야 하는지 확인
-        미국 주식시장 기준
-        
-        Returns:
-            bool: 전송해야 하면 True
         """
         if self.is_us_market_closed():
             print("🇺🇸 미국 주식시장 휴장일이므로 알림을 전송하지 않습니다.")
@@ -217,12 +328,6 @@ class FearGreedNotifier:
     def send_telegram_message(self, message):
         """
         텔레그램으로 메시지 전송
-        
-        Args:
-            message (str): 전송할 메시지
-            
-        Returns:
-            bool: 전송 성공 여부
         """
         try:
             print("📤 텔레그램 메시지 전송 중...")
@@ -248,18 +353,16 @@ class FearGreedNotifier:
     def create_daily_message(self):
         """
         매일 전송할 메시지 생성
-        
-        Returns:
-            str: 완성된 메시지
         """
-        # Fear & Greed Index 데이터 가져오기
-        fear_greed_data = self.get_fear_greed_index()
+        # CNN Fear & Greed Index 데이터 가져오기
+        fear_greed_data = self.get_cnn_fear_greed_index()
+        
+        # CNN에서 실패하면 대체 데이터 시도
+        if not fear_greed_data:
+            fear_greed_data = self.get_fallback_data()
         
         if not fear_greed_data:
-            return "❌ Fear & Greed Index 데이터를 가져올 수 없습니다. 나중에 다시 시도해주세요."
-        
-        # 추이 분석
-        trend, avg_7days = self.get_trend_analysis()
+            return "❌ Fear & Greed Index 데이터를 가져올 수 없습니다. CNN 사이트에 접속할 수 없거나 구조가 변경되었을 수 있습니다."
         
         # 현재 시간 (한국시간)
         current_time = datetime.now().strftime("%Y년 %m월 %d일 %H시 %M분")
@@ -272,31 +375,14 @@ class FearGreedNotifier:
         filled_bars = value // 10
         progress_bar = "🟩" * filled_bars + "⬜" * (10 - filled_bars)
         
-        # 7일 평균과 비교
-        if avg_7days > 0:
-            vs_avg = value - avg_7days
-            if vs_avg > 5:
-                avg_comment = f"📊 7일 평균({avg_7days:.1f})보다 높음 (+{vs_avg:.1f})"
-            elif vs_avg < -5:
-                avg_comment = f"📊 7일 평균({avg_7days:.1f})보다 낮음 ({vs_avg:.1f})"
-            else:
-                avg_comment = f"📊 7일 평균({avg_7days:.1f})과 비슷한 수준"
-        else:
-            avg_comment = "📊 평균 비교 데이터 없음"
-        
         # 메시지 구성
         message = f"""
-🌅 <b>오늘의 암호화폐 공포&탐욕 지수</b> {emoji}
-📅 {current_time} (미국 시장 개장일)
+🇺🇸 <b>미국 주식시장 Fear & Greed Index</b> {emoji}
+📅 {current_time} (CNN 데이터 기반)
 
 📊 <b>현재 지수: {fear_greed_data['value']}/100</b>
 {progress_bar}
 {interpretation}
-
-📈 <b>시장 분석</b>
-• {trend}
-• {avg_comment}
-• 상태: {fear_greed_data['classification']}
 
 💡 <b>가치투자자 가이드</b>
 {advice}
@@ -304,18 +390,23 @@ class FearGreedNotifier:
 🎯 <b>투자 전략</b>
 {strategy}
 
-🇺🇸 <b>미국 시장 연계 분석</b>
-암호화폐와 미국 주식시장은 상관관계가 높으니
-오늘 미국 시장 동향도 함께 체크해보세요!
+📈 <b>CNN Fear & Greed Index 구성요소</b>
+• 주식 가격 모멘텀 (Stock Price Momentum)
+• 주식 가격 강도 (Stock Price Strength)  
+• 주식 시장 폭 (Stock Price Breadth)
+• 풋/콜 옵션 비율 (Put/Call Options)
+• 정크본드 수요 (Junk Bond Demand)
+• 시장 변동성 VIX (Market Volatility)
+• 안전자산 수요 (Safe Haven Demand)
 
-📚 <b>투자 원칙 reminder</b>
-"시장의 감정에 휘둘리지 말고, 기업의 본질적 가치에 집중하세요!"
-
-📖 <b>워렌 버핏의 명언</b>
+📚 <b>워렌 버핏의 투자 원칙</b>
 "다른 사람이 탐욕스러울 때 두려워하고, 
 다른 사람이 두려워할 때 탐욕스러워하라"
 
-🤖 <i>GitHub Actions 자동 전송 (미국 시장 개장일만) | 출처: Alternative.me</i>
+🔗 <b>데이터 출처</b>
+{fear_greed_data['source']}
+
+🤖 <i>GitHub Actions 자동 전송 (미국 시장 개장일만)</i>
         """
         
         return message.strip()
@@ -325,7 +416,7 @@ class FearGreedNotifier:
         메인 실행 함수
         """
         print("=" * 60)
-        print("📱 Fear & Greed Index GitHub Actions 실행 시작")
+        print("🇺🇸 CNN Fear & Greed Index GitHub Actions 실행 시작")
         print("=" * 60)
         
         try:
@@ -356,15 +447,15 @@ def main():
     GitHub Actions에서 실행되는 메인 함수
     """
     try:
-        # Fear & Greed 알림 객체 생성 및 실행
-        notifier = FearGreedNotifier()
+        # CNN Fear & Greed 알림 객체 생성 및 실행
+        notifier = CNNFearGreedNotifier()
         success = notifier.run()
         
         if success:
             print("\n🎉 GitHub Actions 실행 성공!")
         else:
             print("\n💥 GitHub Actions 실행 실패!")
-            exit(1)  # 실패시 종료 코드 1 반환
+            exit(1)
             
     except Exception as e:
         print(f"\n💥 치명적 오류: {e}")
