@@ -4,14 +4,12 @@ from datetime import datetime, date
 import calendar
 import re
 from bs4 import BeautifulSoup
-import json
 import time
 
-class RobustCNNFearGreedNotifier:
+class PreciseCNNFearGreedNotifier:
     def __init__(self):
         """
-        견고한 CNN Fear & Greed Index 추출기
-        특정 값에 의존하지 않고 구조 기반으로 추출
+        정확한 CSS 셀렉터 기반 CNN Fear & Greed Index 추출
         """
         self.telegram_token = os.getenv('TELEGRAM_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
@@ -24,7 +22,7 @@ class RobustCNNFearGreedNotifier:
     
     def get_cnn_fear_greed_index(self):
         """
-        CNN Fear & Greed Index를 견고하게 추출
+        실제 CSS 셀렉터를 사용한 정확한 추출
         """
         try:
             print("📊 CNN Fear & Greed Index 데이터 요청 중...")
@@ -33,15 +31,15 @@ class RobustCNNFearGreedNotifier:
             user_agents = [
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             ]
             
             for attempt, user_agent in enumerate(user_agents, 1):
-                print(f"🔄 시도 {attempt}/{len(user_agents)}: {user_agent[:50]}...")
+                print(f"🔄 시도 {attempt}/{len(user_agents)}...")
                 
                 headers = {
                     'User-Agent': user_agent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Accept-Encoding': 'gzip, deflate, br',
                     'Connection': 'keep-alive',
@@ -51,85 +49,172 @@ class RobustCNNFearGreedNotifier:
                     'DNT': '1',
                     'Sec-Fetch-Dest': 'document',
                     'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none'
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1'
                 }
                 
                 try:
-                    response = requests.get(self.cnn_url, headers=headers, timeout=20)
+                    response = requests.get(self.cnn_url, headers=headers, timeout=25)
                     response.raise_for_status()
                     
-                    if len(response.text) > 50000:  # 충분한 내용이 로드됨
+                    if len(response.text) > 100000:  # 충분한 내용 로드 확인
                         print(f"✅ CNN 페이지 로드 성공 ({len(response.text):,} 글자)")
                         break
                     else:
-                        print(f"⚠️ 페이지 내용 부족 ({len(response.text)} 글자)")
+                        print(f"⚠️ 페이지 내용 부족 ({len(response.text):,} 글자), 재시도...")
                         
                 except Exception as e:
                     print(f"❌ 시도 {attempt} 실패: {e}")
                     if attempt < len(user_agents):
-                        time.sleep(2)  # 잠시 대기
+                        time.sleep(3)  # 3초 대기 후 재시도
                         continue
                     else:
                         raise
             
+            # BeautifulSoup으로 HTML 파싱
             soup = BeautifulSoup(response.content, 'html.parser')
+            print("✅ HTML 파싱 완료")
             
-            # 다단계 추출 시스템
-            extraction_methods = [
-                ('핵심 패턴', self._extract_core_patterns),
-                ('JavaScript 객체', self._extract_js_objects), 
-                ('DOM 구조', self._extract_dom_structure),
-                ('메타데이터', self._extract_metadata),
-                ('컨텍스트 분석', self._extract_contextual),
-                ('백업 패턴', self._extract_backup_patterns)
-            ]
+            # 방법 1: 정확한 CSS 셀렉터로 추출
+            result = self._extract_with_exact_selectors(soup)
+            if result:
+                return result
             
-            for method_name, extraction_func in extraction_methods:
-                print(f"\n🔍 {method_name} 추출 시도...")
-                try:
-                    result = extraction_func(response.text, soup)
-                    if result and self._validate_score(result):
-                        print(f"✅ {method_name}에서 성공: {result['value']}")
-                        result['extraction_method'] = method_name
-                        return result
-                    elif result:
-                        print(f"⚠️ {method_name} 결과 검증 실패: {result.get('value', 'None')}")
-                except Exception as e:
-                    print(f"❌ {method_name} 오류: {e}")
-                    continue
+            # 방법 2: 클래스명만으로 추출 (백업)
+            result = self._extract_with_class_names(soup)
+            if result:
+                return result
+            
+            # 방법 3: 텍스트 패턴으로 추출 (최후 수단)
+            result = self._extract_with_patterns(response.text)
+            if result:
+                return result
             
             print("❌ 모든 추출 방법 실패")
             return None
             
         except Exception as e:
-            print(f"❌ CNN 데이터 추출 전체 오류: {e}")
+            print(f"❌ CNN 데이터 추출 오류: {e}")
             return None
     
-    def _extract_core_patterns(self, html_text, soup):
+    def _extract_with_exact_selectors(self, soup):
         """
-        핵심 Fear & Greed 패턴으로 추출
+        정확한 CSS 셀렉터로 추출 (가장 확실한 방법)
         """
-        # CNN의 실제 구조를 반영한 정확한 패턴들
-        core_patterns = [
-            # JavaScript 변수/객체 패턴
-            r'(?:fear.*greed|fearGread|fearAndGreed).*?["\']?(?:score|value|index|current)["\']?\s*[:=]\s*["\']?(\d{1,2})["\']?',
-            r'["\'](?:score|value|index)["\']?\s*[:=]\s*["\']?(\d{1,2})["\']?.*?(?:fear|greed)',
+        try:
+            print("🎯 정확한 CSS 셀렉터로 추출 시도...")
             
-            # HTML 데이터 속성 패턴
-            r'data-(?:fear-greed-)?(?:score|value|index|current)["\s]*=["\s]*(\d{1,2})["\s]*',
-            r'(?:id|class)["\s]*=["\s]*[^"]*(?:fear.*greed|greed.*fear)[^"]*["\s]*[^>]*>.*?(\d{1,2})',
+            # 지수 값 추출: .market-fng-gauge__dial-number-value
+            score_element = soup.select_one('.market-fng-gauge__dial-number-value')
             
-            # JSON 구조 패턴
-            r'\{[^}]*(?:fear|greed)[^}]*["\'](?:score|value|index)["\']?\s*:\s*["\']?(\d{1,2})["\']?[^}]*\}',
-            r'\{[^}]*["\'](?:score|value|index)["\']?\s*:\s*["\']?(\d{1,2})["\']?[^}]*(?:fear|greed)[^}]*\}',
+            if score_element:
+                score_text = score_element.get_text(strip=True)
+                print(f"✅ 지수 요소 발견: '{score_text}'")
+                
+                # 숫자 추출
+                score_match = re.search(r'\b(\d{1,2})\b', score_text)
+                if score_match:
+                    score = int(score_match.group(1))
+                    print(f"✅ 지수 값 추출 성공: {score}")
+                    
+                    # 업데이트 시간 추출: .market-fng-gauge__timestamp
+                    timestamp_element = soup.select_one('.market-fng-gauge__timestamp')
+                    update_time = "업데이트 시간 불명"
+                    
+                    if timestamp_element:
+                        update_text = timestamp_element.get_text(strip=True)
+                        print(f"✅ 업데이트 시간 발견: '{update_text}'")
+                        update_time = update_text
+                    else:
+                        print("⚠️ 업데이트 시간 요소를 찾을 수 없음")
+                    
+                    if 0 <= score <= 100:
+                        return {
+                            'value': score,
+                            'classification': self._get_classification(score),
+                            'source': 'CNN Fear & Greed Index',
+                            'update_time': update_time,
+                            'extraction_method': 'exact_css_selector',
+                            'confidence': 1.0
+                        }
+                    else:
+                        print(f"❌ 유효하지 않은 점수 범위: {score}")
+                else:
+                    print(f"❌ 지수 텍스트에서 숫자를 찾을 수 없음: '{score_text}'")
+            else:
+                print("❌ .market-fng-gauge__dial-number-value 요소를 찾을 수 없음")
             
-            # 스크립트 내 직접 할당 패턴
-            r'(?:var|let|const)\s+(?:fear.*greed|score|index)\s*=\s*["\']?(\d{1,2})["\']?',
-            r'(?:fear.*greed|score|index)\s*=\s*["\']?(\d{1,2})["\']?',
-        ]
-        
-        for i, pattern in enumerate(core_patterns, 1):
-            try:
+            return None
+            
+        except Exception as e:
+            print(f"정확한 셀렉터 추출 오류: {e}")
+            return None
+    
+    def _extract_with_class_names(self, soup):
+        """
+        클래스명 기반 백업 추출
+        """
+        try:
+            print("🔄 클래스명 기반 백업 추출 시도...")
+            
+            # Fear & Greed 관련 클래스들 찾기
+            potential_classes = [
+                'market-fng-gauge__dial-number-value',
+                'market-fng-gauge__dial-number',
+                'fng-gauge',
+                'fear-greed',
+                'dial-number',
+                'gauge-value'
+            ]
+            
+            for class_name in potential_classes:
+                elements = soup.find_all(class_=lambda x: x and class_name in x)
+                
+                if elements:
+                    print(f"  📋 '{class_name}' 관련 요소 {len(elements)}개 발견")
+                    
+                    for element in elements:
+                        text = element.get_text(strip=True)
+                        print(f"    텍스트: '{text}'")
+                        
+                        # 숫자 패턴 찾기
+                        numbers = re.findall(r'\b(\d{1,2})\b', text)
+                        for num_str in numbers:
+                            score = int(num_str)
+                            if 0 <= score <= 100:
+                                print(f"✅ 클래스 기반 점수 발견: {score}")
+                                return {
+                                    'value': score,
+                                    'classification': self._get_classification(score),
+                                    'source': 'CNN Fear & Greed Index',
+                                    'extraction_method': f'class_based_{class_name}',
+                                    'confidence': 0.8
+                                }
+            
+            return None
+            
+        except Exception as e:
+            print(f"클래스명 기반 추출 오류: {e}")
+            return None
+    
+    def _extract_with_patterns(self, html_text):
+        """
+        텍스트 패턴 기반 최후 추출
+        """
+        try:
+            print("🔄 텍스트 패턴 기반 최후 추출 시도...")
+            
+            # CNN 특화 패턴들
+            patterns = [
+                r'market-fng-gauge__dial-number-value[^>]*>(\d{1,2})',
+                r'dial-number-value[^>]*>(\d{1,2})',
+                r'fear.*greed.*?(\d{1,2})',
+                r'(\d{1,2}).*?fear.*greed',
+                r'gauge.*?(\d{1,2})',
+                r'index.*?(\d{1,2})',
+            ]
+            
+            for i, pattern in enumerate(patterns, 1):
                 matches = list(re.finditer(pattern, html_text, re.IGNORECASE | re.DOTALL))
                 
                 if matches:
@@ -137,372 +222,31 @@ class RobustCNNFearGreedNotifier:
                     
                     for match in matches:
                         score = int(match.group(1))
-                        
-                        # 컨텍스트 검증
-                        context = self._get_match_context(html_text, match, 300)
-                        confidence = self._calculate_confidence(context, score)
-                        
-                        if confidence >= 0.7:  # 70% 이상 신뢰도
-                            print(f"    ✅ 높은 신뢰도 점수: {score} (신뢰도: {confidence:.2f})")
-                            return {
-                                'value': score,
-                                'classification': self._get_classification(score),
-                                'source': 'CNN Fear & Greed Index',
-                                'confidence': confidence,
-                                'pattern_used': f'core_pattern_{i}',
-                                'context_preview': context[:100] + '...'
-                            }
-                        elif confidence >= 0.4:
-                            print(f"    📊 중간 신뢰도 점수: {score} (신뢰도: {confidence:.2f})")
-                            # 일단 저장해두고 더 좋은 것이 없으면 사용
+                        if 0 <= score <= 100:
+                            # 컨텍스트 확인
+                            start = max(0, match.start() - 200)
+                            end = min(len(html_text), match.end() + 200)
+                            context = html_text[start:end]
                             
-            except Exception as e:
-                print(f"  패턴 {i} 오류: {e}")
-                continue
-        
-        return None
-    
-    def _extract_js_objects(self, html_text, soup):
-        """
-        JavaScript 객체에서 추출
-        """
-        script_tags = soup.find_all('script')
-        print(f"  총 {len(script_tags)}개 스크립트 태그 분석...")
-        
-        # Fear & Greed 관련 스크립트만 필터링
-        relevant_scripts = []
-        for script in script_tags:
-            if script.string:
-                script_lower = script.string.lower()
-                if any(keyword in script_lower for keyword in ['fear', 'greed', 'market', 'index']):
-                    relevant_scripts.append(script.string)
-        
-        print(f"  관련 스크립트 {len(relevant_scripts)}개 발견")
-        
-        for i, script_content in enumerate(relevant_scripts):
-            try:
-                # JSON 객체 패턴 찾기
-                json_patterns = [
-                    r'\{[^{}]*(?:fear|greed)[^{}]*\}',
-                    r'\{[^{}]*(?:score|value|index)[^{}]*\}',
-                    r'(?:fearGreed|fearAndGreed|marketSentiment)\s*[:=]\s*(\{[^}]+\})',
-                ]
-                
-                for pattern in json_patterns:
-                    matches = re.finditer(pattern, script_content, re.IGNORECASE | re.DOTALL)
-                    
-                    for match in matches:
-                        try:
-                            # JSON 파싱 시도
-                            json_str = match.group(1) if match.groups() else match.group(0)
+                            # Fear & Greed 관련 키워드 확인
+                            keywords = ['fear', 'greed', 'market', 'gauge', 'index']
+                            keyword_count = sum(1 for keyword in keywords if keyword in context.lower())
                             
-                            # JSON 정리 (JavaScript 객체를 JSON으로 변환)
-                            json_str = re.sub(r'([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:', r'\1"\2":', json_str)
-                            json_str = re.sub(r"'([^']*)'", r'"\1"', json_str)
-                            
-                            data = json.loads(json_str)
-                            score = self._find_score_in_data(data)
-                            
-                            if score and 0 <= score <= 100:
-                                print(f"    ✅ JSON 객체에서 점수 발견: {score}")
+                            if keyword_count >= 2:
+                                print(f"✅ 패턴 기반 점수 발견: {score} (키워드 {keyword_count}개)")
                                 return {
                                     'value': score,
                                     'classification': self._get_classification(score),
                                     'source': 'CNN Fear & Greed Index',
-                                    'confidence': 0.9,
-                                    'extraction_method': 'js_object'
+                                    'extraction_method': f'pattern_{i}',
+                                    'confidence': 0.6
                                 }
-                                
-                        except json.JSONDecodeError:
-                            # JSON 파싱 실패는 정상적, 계속 진행
-                            continue
-                            
-            except Exception as e:
-                print(f"  스크립트 {i} 분석 오류: {e}")
-                continue
-        
-        return None
-    
-    def _extract_dom_structure(self, html_text, soup):
-        """
-        DOM 구조 기반 추출
-        """
-        # Fear & Greed 관련 텍스트를 포함한 요소들 찾기
-        fear_greed_elements = soup.find_all(text=re.compile(r'fear.*greed|greed.*fear', re.IGNORECASE))
-        print(f"  Fear/Greed 텍스트 요소 {len(fear_greed_elements)}개 발견")
-        
-        candidates = []
-        
-        for element in fear_greed_elements:
-            try:
-                parent = element.parent
-                if not parent:
-                    continue
-                
-                # 부모와 형제 요소들에서 숫자 찾기
-                for level in range(3):  # 3단계까지 올라가면서 확인
-                    if not parent:
-                        break
-                    
-                    # 현재 레벨의 모든 텍스트 수집
-                    all_text = ' '.join(parent.get_text(separator=' ', strip=True).split())
-                    
-                    # 숫자 패턴 찾기
-                    number_patterns = [
-                        r'\b(\d{1,2})\b(?!\d)',  # 기본 1-2자리 숫자
-                        r'(\d{1,2})(?:\.\d+)?',  # 소수점 포함
-                        r'(?:score|index|value).*?(\d{1,2})',  # 키워드 뒤 숫자
-                        r'(\d{1,2}).*?(?:score|index|value)',  # 숫자 뒤 키워드
-                    ]
-                    
-                    for pattern in number_patterns:
-                        numbers = re.findall(pattern, all_text)
-                        for num_str in numbers:
-                            try:
-                                score = int(float(num_str))
-                                if 0 <= score <= 100:
-                                    # 컨텍스트 품질 평가
-                                    context_quality = self._evaluate_context_quality(all_text, score)
-                                    candidates.append({
-                                        'score': score,
-                                        'context': all_text[:200],
-                                        'quality': context_quality,
-                                        'level': level
-                                    })
-                            except ValueError:
-                                continue
-                    
-                    parent = parent.parent
-                    
-            except Exception as e:
-                print(f"  DOM 요소 분석 오류: {e}")
-                continue
-        
-        # 가장 품질 좋은 후보 선택
-        if candidates:
-            best_candidate = max(candidates, key=lambda x: x['quality'])
-            print(f"    ✅ DOM에서 최적 점수: {best_candidate['score']} (품질: {best_candidate['quality']:.2f})")
             
-            if best_candidate['quality'] >= 0.6:
-                return {
-                    'value': best_candidate['score'],
-                    'classification': self._get_classification(best_candidate['score']),
-                    'source': 'CNN Fear & Greed Index',
-                    'confidence': best_candidate['quality'],
-                    'extraction_method': 'dom_structure'
-                }
-        
-        return None
-    
-    def _extract_metadata(self, html_text, soup):
-        """
-        메타데이터에서 추출
-        """
-        # 메타 태그들 확인
-        meta_tags = soup.find_all('meta')
-        
-        for meta in meta_tags:
-            content = meta.get('content', '')
-            name = meta.get('name', '')
-            property_name = meta.get('property', '')
+            return None
             
-            all_meta_text = f"{name} {property_name} {content}".lower()
-            
-            if any(keyword in all_meta_text for keyword in ['fear', 'greed', 'market', 'sentiment']):
-                numbers = re.findall(r'\b(\d{1,2})\b', content)
-                for num_str in numbers:
-                    score = int(num_str)
-                    if 0 <= score <= 100:
-                        print(f"    ✅ 메타데이터에서 점수: {score}")
-                        return {
-                            'value': score,
-                            'classification': self._get_classification(score),
-                            'source': 'CNN Fear & Greed Index',
-                            'confidence': 0.7,
-                            'extraction_method': 'metadata'
-                        }
-        
-        return None
-    
-    def _extract_contextual(self, html_text, soup):
-        """
-        컨텍스트 분석 기반 추출
-        """
-        # 페이지를 줄 단위로 분석
-        lines = html_text.split('\n')
-        
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            
-            # Fear & Greed 관련 줄 찾기
-            if any(keyword in line_lower for keyword in ['fear', 'greed']):
-                # 앞뒤 5줄씩 컨텍스트 수집
-                context_start = max(0, i - 5)
-                context_end = min(len(lines), i + 6)
-                context_lines = lines[context_start:context_end]
-                context = ' '.join(context_lines)
-                
-                # 이 컨텍스트에서 가장 적절한 숫자 찾기
-                numbers = re.findall(r'\b(\d{1,2})\b', context)
-                
-                if numbers:
-                    # 숫자들의 적절성 평가
-                    number_scores = []
-                    for num_str in numbers:
-                        score = int(num_str)
-                        if 0 <= score <= 100:
-                            appropriateness = self._evaluate_number_appropriateness(context, score, line_lower)
-                            number_scores.append((score, appropriateness))
-                    
-                    if number_scores:
-                        # 가장 적절한 점수 선택
-                        best_score, best_appropriateness = max(number_scores, key=lambda x: x[1])
-                        
-                        if best_appropriateness >= 0.5:
-                            print(f"    ✅ 컨텍스트에서 점수: {best_score} (적절성: {best_appropriateness:.2f})")
-                            return {
-                                'value': best_score,
-                                'classification': self._get_classification(best_score),
-                                'source': 'CNN Fear & Greed Index',
-                                'confidence': best_appropriateness,
-                                'extraction_method': 'contextual'
-                            }
-        
-        return None
-    
-    def _extract_backup_patterns(self, html_text, soup):
-        """
-        백업 패턴들로 최후 시도
-        """
-        # 매우 관대한 패턴들 (false positive 위험 있지만 마지막 수단)
-        backup_patterns = [
-            r'(?:current|today|now).*?(\d{1,2})(?!\d)',
-            r'(\d{1,2})(?!\d).*?(?:current|today|now)',
-            r'market.*?(\d{1,2})(?!\d)',
-            r'(\d{1,2})(?!\d).*?market',
-            r'index.*?(\d{1,2})(?!\d)',
-            r'(\d{1,2})(?!\d).*?index',
-        ]
-        
-        page_numbers = []
-        
-        for pattern in backup_patterns:
-            matches = re.finditer(pattern, html_text, re.IGNORECASE)
-            for match in matches:
-                score = int(match.group(1))
-                if 20 <= score <= 90:  # 더 제한적인 범위
-                    context = self._get_match_context(html_text, match, 200)
-                    if any(keyword in context.lower() for keyword in ['fear', 'greed', 'market', 'emotion']):
-                        page_numbers.append(score)
-        
-        if page_numbers:
-            # 가장 자주 나타나는 숫자 선택
-            from collections import Counter
-            most_common = Counter(page_numbers).most_common(1)
-            if most_common:
-                score = most_common[0][0]
-                print(f"    ✅ 백업 패턴에서 점수: {score} (빈도: {most_common[0][1]})")
-                return {
-                    'value': score,
-                    'classification': self._get_classification(score),
-                    'source': 'CNN Fear & Greed Index',
-                    'confidence': 0.4,
-                    'extraction_method': 'backup_pattern'
-                }
-        
-        return None
-    
-    def _get_match_context(self, text, match, context_size):
-        """매치 주변 컨텍스트 추출"""
-        start = max(0, match.start() - context_size)
-        end = min(len(text), match.end() + context_size)
-        return text[start:end]
-    
-    def _calculate_confidence(self, context, score):
-        """컨텍스트 기반 신뢰도 계산"""
-        confidence = 0.0
-        context_lower = context.lower()
-        
-        # Fear & Greed 키워드
-        if 'fear' in context_lower and 'greed' in context_lower:
-            confidence += 0.4
-        elif 'fear' in context_lower or 'greed' in context_lower:
-            confidence += 0.2
-        
-        # 관련 키워드들
-        keywords = ['index', 'market', 'sentiment', 'emotion', 'score', 'current']
-        keyword_count = sum(1 for keyword in keywords if keyword in context_lower)
-        confidence += min(keyword_count * 0.1, 0.3)
-        
-        # 점수 범위 합리성
-        if 20 <= score <= 80:
-            confidence += 0.2
-        elif 10 <= score <= 90:
-            confidence += 0.1
-        
-        # 숫자가 적절한 위치에 있는지
-        if re.search(r'(?:score|index|value).*?' + str(score), context_lower):
-            confidence += 0.2
-        elif re.search(str(score) + r'.*?(?:score|index|value)', context_lower):
-            confidence += 0.1
-        
-        return min(confidence, 1.0)
-    
-    def _evaluate_context_quality(self, context, score):
-        """컨텍스트 품질 평가"""
-        return self._calculate_confidence(context, score)
-    
-    def _evaluate_number_appropriateness(self, context, score, trigger_line):
-        """숫자의 적절성 평가"""
-        appropriateness = 0.0
-        
-        # Fear & Greed 트리거 라인에 더 높은 점수
-        if 'fear' in trigger_line and 'greed' in trigger_line:
-            appropriateness += 0.5
-        
-        # 컨텍스트 품질
-        appropriateness += self._calculate_confidence(context, score) * 0.5
-        
-        return appropriateness
-    
-    def _find_score_in_data(self, data):
-        """JSON 데이터에서 점수 찾기"""
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if any(keyword in key.lower() for keyword in ['score', 'index', 'value', 'fear', 'greed']):
-                    if isinstance(value, (int, str)) and str(value).isdigit():
-                        score = int(value)
-                        if 0 <= score <= 100:
-                            return score
-                
-                result = self._find_score_in_data(value)
-                if result:
-                    return result
-        elif isinstance(data, list):
-            for item in data:
-                result = self._find_score_in_data(item)
-                if result:
-                    return result
-        
-        return None
-    
-    def _validate_score(self, result):
-        """추출된 점수의 유효성 검증"""
-        if not result or 'value' not in result:
-            return False
-        
-        score = result['value']
-        
-        # 기본 범위 체크
-        if not (0 <= score <= 100):
-            return False
-        
-        # 신뢰도 체크
-        confidence = result.get('confidence', 0.5)
-        if confidence < 0.3:
-            return False
-        
-        return True
+        except Exception as e:
+            print(f"패턴 기반 추출 오류: {e}")
+            return None
     
     def _get_classification(self, value):
         """점수 분류"""
@@ -594,7 +338,7 @@ class RobustCNNFearGreedNotifier:
         fear_greed_data = self.get_cnn_fear_greed_index()
         
         if not fear_greed_data:
-            return "❌ CNN Fear & Greed Index 데이터를 가져올 수 없습니다. 사이트 구조가 변경되었거나 접속에 문제가 있을 수 있습니다."
+            return "❌ CNN Fear & Greed Index 데이터를 가져올 수 없습니다. 사이트 접속에 문제가 있거나 구조가 변경되었을 수 있습니다."
         
         current_time = datetime.now().strftime("%Y년 %m월 %d일 %H시 %M분")
         interpretation, advice, emoji, strategy = self.interpret_index(fear_greed_data['value'])
@@ -603,10 +347,17 @@ class RobustCNNFearGreedNotifier:
         filled_bars = value // 10
         progress_bar = "🟩" * filled_bars + "⬜" * (10 - filled_bars)
         
+        # 신뢰도 표시
         confidence = fear_greed_data.get('confidence', 0.5)
-        confidence_text = f"신뢰도 {confidence:.0%}"
+        if confidence >= 0.9:
+            confidence_text = "🎯 정확한 추출"
+        elif confidence >= 0.7:
+            confidence_text = "📊 높은 신뢰도"
+        else:
+            confidence_text = "⚠️ 백업 방법"
         
-        extraction_method = fear_greed_data.get('extraction_method', '알 수 없음')
+        # 업데이트 시간
+        update_time = fear_greed_data.get('update_time', '업데이트 시간 불명')
         
         message = f"""
 🇺🇸 <b>미국 주식시장 Fear & Greed Index</b> {emoji}
@@ -615,6 +366,9 @@ class RobustCNNFearGreedNotifier:
 📊 <b>현재 지수: {fear_greed_data['value']}/100</b>
 {progress_bar}
 {interpretation}
+
+🕐 <b>CNN 업데이트 시간</b>
+{update_time}
 
 💡 <b>가치투자자 가이드</b>
 {advice}
@@ -632,9 +386,9 @@ class RobustCNNFearGreedNotifier:
 다른 사람이 두려워할 때 탐욕스러워하라"
 
 🔗 <b>데이터 출처:</b> CNN Fear & Greed Index
-🔍 <b>추출 방법:</b> {extraction_method}
+🔍 <b>추출 방법:</b> {fear_greed_data.get('extraction_method', 'CSS 셀렉터')}
 
-🤖 <i>견고한 CNN 스크래퍼 v2.0 (미국 시장 개장일만)</i>
+🤖 <i>정확한 CSS 셀렉터 기반 v3.0 (미국 시장 개장일만)</i>
         """
         
         return message.strip()
@@ -642,7 +396,7 @@ class RobustCNNFearGreedNotifier:
     def run(self):
         """메인 실행"""
         print("=" * 60)
-        print("🇺🇸 견고한 CNN Fear & Greed Index 스크래퍼 실행")
+        print("🎯 정확한 CSS 셀렉터 기반 CNN 스크래퍼 실행")
         print("=" * 60)
         
         try:
@@ -654,7 +408,7 @@ class RobustCNNFearGreedNotifier:
             success = self.send_telegram_message(message)
             
             if success:
-                print("✅ CNN 지수 추출 및 전송 완료!")
+                print("✅ 정확한 CNN 지수 추출 및 전송 완료!")
                 return True
             else:
                 print("❌ 메시지 전송 실패")
@@ -666,11 +420,11 @@ class RobustCNNFearGreedNotifier:
 
 def main():
     try:
-        notifier = RobustCNNFearGreedNotifier()
+        notifier = PreciseCNNFearGreedNotifier()
         success = notifier.run()
         
         if success:
-            print("\n🎉 견고한 CNN 스크래퍼 성공!")
+            print("\n🎉 정확한 CSS 셀렉터 기반 추출 성공!")
         else:
             print("\n💥 실행 실패!")
             exit(1)
