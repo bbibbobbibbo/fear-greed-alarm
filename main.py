@@ -73,7 +73,7 @@ class FearGreedNotifier:
                 
                 if change > 0:
                     trend = f"📈 전일 대비 +{change}포인트 상승"
-                elif change < 0:
+                elif change < -0:
                     trend = f"📉 전일 대비 {change}포인트 하락"
                 else:
                     trend = "➡️ 전일과 동일"
@@ -88,6 +88,44 @@ class FearGreedNotifier:
         except Exception as e:
             print(f"❌ 추이 분석 오류: {e}")
             return "📊 추이 분석 불가", 0
+    
+    def interpret_index(self, value):
+        """
+        지수 값에 따른 해석과 투자 가이드
+        
+        Args:
+            value (int): Fear & Greed Index 값 (0-100)
+            
+        Returns:
+            tuple: (해석, 조언, 이모지, 전략) 튜플
+        """
+        if value <= 25:
+            interpretation = "🔴 극도의 공포 (Extreme Fear)"
+            advice = "📈 가치투자 기회! 우량주 매수를 고려해보세요. 역발상 투자의 황금 타이밍일 수 있습니다."
+            emoji = "😱"
+            strategy = "💰 점진적 매수 전략 추천"
+        elif value <= 45:
+            interpretation = "🟠 공포 (Fear)" 
+            advice = "📊 관심 종목들의 밸류에이션을 확인해보세요. 좋은 기업이 할인된 가격에 나올 수 있습니다."
+            emoji = "😰"
+            strategy = "🎯 선별적 매수 고려"
+        elif value <= 55:
+            interpretation = "🟡 중립 (Neutral)"
+            advice = "⚖️ 평소와 같이 꾸준한 투자를 유지하세요. 정기 적립투자에 좋은 시기입니다."
+            emoji = "😐"
+            strategy = "🔄 정기투자 유지"
+        elif value <= 75:
+            interpretation = "🟢 탐욕 (Greed)"
+            advice = "⚠️ 과열 구간 진입. 신중한 매수가 필요하며, 고평가된 종목은 피하는 것이 좋습니다."
+            emoji = "😊"
+            strategy = "🚨 신중한 투자 필요"
+        else:
+            interpretation = "🔥 극도의 탐욕 (Extreme Greed)"
+            advice = "🚨 고평가 구간! 일부 매도를 고려하고 현금 비중을 늘리는 것을 추천합니다."
+            emoji = "🤑"
+            strategy = "💸 차익실현 고려"
+            
+        return interpretation, advice, emoji, strategy
     
     def is_us_market_closed(self):
         """
@@ -104,6 +142,7 @@ class FearGreedNotifier:
         
         # 주말 체크 (토, 일)
         if weekday >= 5:
+            print(f"🇺🇸 주말입니다 ({['월','화','수','목','금','토','일'][weekday]}요일)")
             return True
             
         # 고정 휴장일들
@@ -174,42 +213,6 @@ class FearGreedNotifier:
             return False
         print("📈 미국 주식시장 개장일 확인 완료!")
         return True
-        """
-        지수 값에 따른 해석과 투자 가이드
-        
-        Args:
-            value (int): Fear & Greed Index 값 (0-100)
-            
-        Returns:
-            tuple: (해석, 조언, 이모지) 튜플
-        """
-        if value <= 25:
-            interpretation = "🔴 극도의 공포 (Extreme Fear)"
-            advice = "📈 가치투자 기회! 우량주 매수를 고려해보세요. 역발상 투자의 황금 타이밍일 수 있습니다."
-            emoji = "😱"
-            strategy = "💰 점진적 매수 전략 추천"
-        elif value <= 45:
-            interpretation = "🟠 공포 (Fear)" 
-            advice = "📊 관심 종목들의 밸류에이션을 확인해보세요. 좋은 기업이 할인된 가격에 나올 수 있습니다."
-            emoji = "😰"
-            strategy = "🎯 선별적 매수 고려"
-        elif value <= 55:
-            interpretation = "🟡 중립 (Neutral)"
-            advice = "⚖️ 평소와 같이 꾸준한 투자를 유지하세요. 정기 적립투자에 좋은 시기입니다."
-            emoji = "😐"
-            strategy = "🔄 정기투자 유지"
-        elif value <= 75:
-            interpretation = "🟢 탐욕 (Greed)"
-            advice = "⚠️ 과열 구간 진입. 신중한 매수가 필요하며, 고평가된 종목은 피하는 것이 좋습니다."
-            emoji = "😊"
-            strategy = "🚨 신중한 투자 필요"
-        else:
-            interpretation = "🔥 극도의 탐욕 (Extreme Greed)"
-            advice = "🚨 고평가 구간! 일부 매도를 고려하고 현금 비중을 늘리는 것을 추천합니다."
-            emoji = "🤑"
-            strategy = "💸 차익실현 고려"
-            
-        return interpretation, advice, emoji, strategy
     
     def send_telegram_message(self, message):
         """
